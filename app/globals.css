@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  height: 100%;
+  min-height: 100%;
+  @apply bg-gray-50 text-gray-900;
+}
+
+/* Ensure app shell is always visible (avoids blank flash on refresh) */
+body > div,
+#__next {
+  min-height: 100%;
+}
+
