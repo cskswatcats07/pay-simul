@@ -236,6 +236,14 @@ export default function PaymentsSimulatorDashboard() {
       const valid = PAYMENT_METHODS.find((m) => m.value === methodParam)
       if (valid) {
         setPaymentMethod(methodParam as PaymentMethodValue)
+        recordMethodUsage(methodParam as PaymentMethodValue)
+        // Reset touched states when payment method changes via sidebar
+        setCardTouched(false)
+        setCvvTouched(false)
+        setExpiryTouched(false)
+        setUpiTouched(false)
+        setShowUpiQr(false)
+        setEtransferTouched(false)
       }
     }
   }, [searchParams])
@@ -253,12 +261,6 @@ export default function PaymentsSimulatorDashboard() {
   useEffect(() => {
     setTxnRef(generateTransactionRef(paymentMethod))
   }, [paymentMethod])
-
-  const availableMethods = useMemo(() => getPaymentMethodsForCountry(country), [country])
-  const paymentMethodOptions = useMemo(
-    () => PAYMENT_METHODS.filter((m) => availableMethods.includes(m.value)),
-    [availableMethods]
-  )
 
   const amount = parseFloat(amountRaw.replace(/,/g, '')) || 0
   const amountValid = amount > 0 && Number.isFinite(amount)
@@ -380,18 +382,6 @@ export default function PaymentsSimulatorDashboard() {
     setCountry(newCountry)
     const methods = getPaymentMethodsForCountry(newCountry)
     setPaymentMethod((prev) => (methods.includes(prev) ? prev : methods[0] ?? 'card'))
-  }, [])
-
-  const handlePaymentMethodChange = useCallback((method: PaymentMethodValue) => {
-    setPaymentMethod(method)
-    recordMethodUsage(method)
-    // Reset touched states when changing payment method
-    setCardTouched(false)
-    setCvvTouched(false)
-    setExpiryTouched(false)
-    setUpiTouched(false)
-    setShowUpiQr(false)
-    setEtransferTouched(false)
   }, [])
 
   const validateIso20022ByCountry = useCallback(() => {
@@ -723,28 +713,6 @@ export default function PaymentsSimulatorDashboard() {
                 </select>
                 {errors.country && (
                   <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.country}</p>
-                )}
-              </div>
-
-              {/* 3. Payment method (country-specific) */}
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Payment method {MANDATORY_MARK}
-                </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => handlePaymentMethodChange(e.target.value as PaymentMethodValue)}
-                  className={`${inputBase} border-gray-200 dark:border-gray-700 ${errors.paymentMethod ? inputError : ''}`}
-                  disabled={isSubmitting}
-                >
-                  {paymentMethodOptions.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.icon} {m.label}
-                    </option>
-                  ))}
-                </select>
-                {errors.paymentMethod && (
-                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.paymentMethod}</p>
                 )}
               </div>
 
