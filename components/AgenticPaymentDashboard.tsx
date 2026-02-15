@@ -21,6 +21,58 @@ import type {
   DelegationConstraints,
 } from '@/lib/agentic'
 
+// ─── Gemini response types (mirrored from server) ───────────────────────────
+
+interface IntentAnalysis {
+  summary: string
+  extractedConstraints: {
+    maxBudget: number | null
+    preferredBrands: string[]
+    mustHaveFeatures: string[]
+    flexibility: 'strict' | 'moderate' | 'flexible'
+    urgency: 'low' | 'medium' | 'high'
+  }
+  agentThinking: string
+  suggestedSearchStrategy: string
+  riskAssessment: string
+}
+
+interface CartRecommendation {
+  reasoning: string
+  selectedMerchant: string
+  merchantReasoning: string
+  items: Array<{ name: string; unitPrice: number; justification: string }>
+  totalAmount: number
+  savingsNote: string
+  alternativeConsidered: string
+  confidence: number
+}
+
+interface VerificationAnalysis {
+  overallAssessment: string
+  constraintAnalysis: Array<{ constraint: string; status: 'pass' | 'fail' | 'warning'; explanation: string }>
+  riskScore: 'low' | 'medium' | 'high'
+  recommendation: 'approve' | 'review' | 'reject'
+  reasoning: string
+}
+
+// ─── API helper ─────────────────────────────────────────────────────────────
+
+async function callGemini<T>(body: Record<string, unknown>): Promise<{ data: T | null; fallback: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/agentic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const json = await res.json()
+    if (json.ok) return { data: json.data as T, fallback: false }
+    return { data: null, fallback: json.fallback ?? true, error: json.error }
+  } catch {
+    return { data: null, fallback: true, error: 'Network error' }
+  }
+}
+
 // ─── Preset Scenarios ────────────────────────────────────────────────────────
 
 const SCENARIOS = [
@@ -175,6 +227,38 @@ function timeAgo(iso: string) {
   return `${Math.floor(diff / 60000)}m ago`
 }
 
+// ─── AI Thinking Indicator ──────────────────────────────────────────────────
+
+function AiThinkingBanner({ label }: { label: string }) {
+  return (
+    <div className="mb-4 flex items-center gap-3 rounded-2xl border border-violet-200 bg-gradient-to-r from-violet-50 to-fuchsia-50 px-4 py-3 dark:border-violet-800/50 dark:from-violet-900/20 dark:to-fuchsia-900/20">
+      <div className="relative flex h-6 w-6 shrink-0 items-center justify-center">
+        <div className="absolute inset-0 animate-ping rounded-full bg-violet-400/30" />
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+      </div>
+      <div>
+        <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">{label}</p>
+        <p className="text-[10px] text-violet-500 dark:text-violet-400">Powered by Gemini 3 Flash</p>
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Insight Card ────────────────────────────────────────────────────────
+
+function AiInsightCard({ title, children, gemini }: { title: string; children: React.ReactNode; gemini?: boolean }) {
+  return (
+    <div className="mb-4 rounded-2xl border border-fuchsia-200 bg-gradient-to-br from-fuchsia-50/80 to-violet-50/80 p-4 dark:border-fuchsia-800/40 dark:from-fuchsia-900/15 dark:to-violet-900/15">
+      <div className="flex items-center gap-2 mb-2">
+        <svg className="h-4 w-4 text-fuchsia-600 dark:text-fuchsia-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" /></svg>
+        <p className="text-xs font-semibold text-fuchsia-700 dark:text-fuchsia-300">{title}</p>
+        {gemini && <span className="ml-auto rounded-full bg-fuchsia-100 px-2 py-0.5 text-[9px] font-bold text-fuchsia-600 dark:bg-fuchsia-900/30 dark:text-fuchsia-400">GEMINI</span>}
+      </div>
+      <div className="text-[11px] leading-relaxed text-gray-700 dark:text-gray-300">{children}</div>
+    </div>
+  )
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function AgenticPaymentDashboard() {
@@ -199,6 +283,13 @@ export default function AgenticPaymentDashboard() {
   const [cartMandate, setCartMandate] = useState<CartMandate | null>(null)
   const [auditTrail, setAuditTrail] = useState<AuditEntry[]>([])
   const [trustScore, setTrustScore] = useState(92)
+
+  // AI state
+  const [aiLoading, setAiLoading] = useState(false)
+  const [geminiActive, setGeminiActive] = useState(false) // whether Gemini responded successfully
+  const [intentAnalysis, setIntentAnalysis] = useState<IntentAnalysis | null>(null)
+  const [cartRec, setCartRec] = useState<CartRecommendation | null>(null)
+  const [verifyAnalysis, setVerifyAnalysis] = useState<VerificationAnalysis | null>(null)
 
   // Animation state
   const [discovering, setDiscovering] = useState(false)
@@ -241,7 +332,9 @@ export default function AgenticPaymentDashboard() {
     setStep('delegate')
   }
 
-  const handleDelegateNext = () => {
+  // ── Phase 1: Delegate → Gemini intent analysis ──────────────────────────
+
+  const handleDelegateNext = async () => {
     if (!intentText.trim() || !maxBudget) return
 
     const constraints: DelegationConstraints = {
@@ -269,7 +362,37 @@ export default function AgenticPaymentDashboard() {
     setIntentMandate(mandate)
     setTransaction(txn)
     addAudit(createAuditEntry('mandate_signed', 'user', principalName, `Intent mandate ${mandate.id} signed. Budget: ${formatCurrency(parseFloat(maxBudget), budgetCurrency)}.`, lastHash))
-    addAudit(createAuditEntry('agent_search_started', 'agent', agent.id, `${agent.name} received mandate. Beginning discovery across ${scenario?.merchants.length ?? 0} merchants.`, lastHash))
+
+    // Call Gemini for intent analysis
+    setAiLoading(true)
+    addAudit(createAuditEntry('agent_search_started', 'agent', agent.id, `${agent.name} analyzing intent via Gemini 3 Flash...`, lastHash))
+
+    const { data: analysis, fallback } = await callGemini<IntentAnalysis>({
+      phase: 'intent',
+      userIntent: intentText.trim(),
+      scenarioName: scenario?.name ?? '',
+      scenarioCategories: scenario?.categories ?? [],
+      availableMerchants: scenario?.merchants ?? [],
+      budget: parseFloat(maxBudget) || 500,
+      currency: budgetCurrency,
+      agentName: agent.name,
+      interactionMode: mode === 'human_present' ? 'supervised' : 'autonomous',
+    })
+
+    setAiLoading(false)
+
+    if (analysis && !fallback) {
+      setGeminiActive(true)
+      setIntentAnalysis(analysis)
+      addAudit(createAuditEntry('agent_search_started', 'agent', agent.id,
+        `Gemini analysis: "${analysis.summary}" Strategy: ${analysis.suggestedSearchStrategy}`, lastHash))
+    } else {
+      setGeminiActive(false)
+      setIntentAnalysis(null)
+      addAudit(createAuditEntry('agent_search_started', 'agent', agent.id,
+        `${agent.name} received mandate. Beginning discovery across ${scenario?.merchants.length ?? 0} merchants. (Simulation mode)`, lastHash))
+    }
+
     setStep('discover')
     startDiscovery()
   }
@@ -301,18 +424,78 @@ export default function AgenticPaymentDashboard() {
     timerRef.current = setTimeout(tick, 600)
   }
 
-  const handleDiscoverNext = () => {
+  // ── Phase 2: Discover → Gemini cart building ────────────────────────────
+
+  const handleDiscoverNext = async () => {
     if (discovering) return
-    // Agent builds cart
-    const items: CartItem[] = (scenario?.cartItems ?? []).map((ci, i) => ({
-      id: `item_${i}`,
-      name: ci.name,
-      quantity: 1,
-      unitPrice: ci.unitPrice,
+
+    // Call Gemini for AI cart building
+    setAiLoading(true)
+    addAudit(createAuditEntry('cart_proposed', 'agent', agent.id, `${agent.name} building optimal cart via Gemini 3 Flash...`, lastHash))
+
+    const { data: rec, fallback } = await callGemini<CartRecommendation>({
+      phase: 'cart',
+      userIntent: intentText.trim(),
+      scenarioName: scenario?.name ?? '',
+      merchants: scenario?.merchants ?? [],
+      availableItems: (scenario?.cartItems ?? []).map((ci) => ({
+        name: ci.name,
+        unitPrice: ci.unitPrice,
+        merchant: ci.merchant,
+        merchantId: ci.merchantId,
+      })),
+      budget: parseFloat(maxBudget) || 500,
       currency: budgetCurrency,
-      merchantId: ci.merchantId,
-      category: scenario?.categories[0],
-    }))
+      agentName: agent.name,
+      intentAnalysis: intentAnalysis ?? {
+        summary: 'No AI analysis available',
+        extractedConstraints: { maxBudget: parseFloat(maxBudget) || null, preferredBrands: [], mustHaveFeatures: [], flexibility: 'moderate', urgency: 'medium' },
+        agentThinking: '',
+        suggestedSearchStrategy: '',
+        riskAssessment: '',
+      },
+    })
+
+    setAiLoading(false)
+
+    let items: CartItem[]
+    let selectedMerchantName: string
+    let selectedMerchantId: string
+
+    if (rec && !fallback) {
+      setCartRec(rec)
+      // Build cart items from Gemini recommendation, matching against available items
+      items = rec.items.map((ri, i) => {
+        const matchedScenarioItem = (scenario?.cartItems ?? []).find(
+          (ci) => ci.name.toLowerCase() === ri.name.toLowerCase()
+        )
+        return {
+          id: `item_${i}`,
+          name: ri.name,
+          quantity: 1,
+          unitPrice: ri.unitPrice,
+          currency: budgetCurrency,
+          merchantId: matchedScenarioItem?.merchantId ?? scenario?.merchants[0]?.id ?? '',
+          category: scenario?.categories[0],
+        }
+      })
+      selectedMerchantName = rec.selectedMerchant || scenario?.merchants[0]?.name || ''
+      selectedMerchantId = scenario?.merchants.find((m) => m.name === rec.selectedMerchant)?.id ?? scenario?.merchants[0]?.id ?? ''
+    } else {
+      setCartRec(null)
+      // Fallback to hardcoded items
+      items = (scenario?.cartItems ?? []).map((ci, i) => ({
+        id: `item_${i}`,
+        name: ci.name,
+        quantity: 1,
+        unitPrice: ci.unitPrice,
+        currency: budgetCurrency,
+        merchantId: ci.merchantId,
+        category: scenario?.categories[0],
+      }))
+      selectedMerchantName = scenario?.merchants[0]?.name ?? ''
+      selectedMerchantId = scenario?.merchants[0]?.id ?? ''
+    }
 
     const cm = createCartMandate({
       intentMandateId: intentMandate?.id ?? '',
@@ -320,23 +503,57 @@ export default function AgenticPaymentDashboard() {
       agentId: agent.id,
       items,
       paymentMethod: 'card',
-      merchantId: scenario?.merchants[0]?.id ?? '',
-      merchantName: scenario?.merchants[0]?.name ?? '',
+      merchantId: selectedMerchantId,
+      merchantName: selectedMerchantName,
       currency: budgetCurrency,
     })
 
     setCartMandate(cm)
-    addAudit(createAuditEntry('cart_proposed', 'agent', agent.id, `Cart mandate ${cm.id} created. Total: ${formatCurrency(cm.totalAmount, cm.currency)}. ${items.length} items from ${scenario?.merchants[0]?.name}.`, lastHash))
+    addAudit(createAuditEntry('cart_proposed', 'agent', agent.id,
+      `Cart mandate ${cm.id} created. Total: ${formatCurrency(cm.totalAmount, cm.currency)}. ${items.length} items from ${selectedMerchantName}.${rec ? ' (AI-optimized)' : ''}`,
+      lastHash))
     setStep('propose')
   }
 
-  const handleProposeNext = () => {
+  // ── Phase 3: Propose → Verify with Gemini analysis ──────────────────────
+
+  const handleProposeNext = async () => {
     setStep('verify')
-    // Validate constraints
+
+    // Local constraint validation
     if (intentMandate && cartMandate) {
       const result = validateMandateConstraints(intentMandate, cartMandate.totalAmount, cartMandate.currency, scenario?.categories[0], 'card')
       setConstraintCheck(result)
-      addAudit(createAuditEntry('intent_verified', 'system', 'protocol_engine', `Constraint check: ${result.valid ? 'PASSED' : 'FAILED'}. ${result.violations.length} violations.`, lastHash))
+      addAudit(createAuditEntry('intent_verified', 'system', 'protocol_engine', `Local constraint check: ${result.valid ? 'PASSED' : 'FAILED'}. ${result.violations.length} violations.`, lastHash))
+    }
+
+    // Call Gemini for AI verification analysis
+    setAiLoading(true)
+    const { data: va, fallback } = await callGemini<VerificationAnalysis>({
+      phase: 'verify',
+      userIntent: intentText.trim(),
+      cartItems: (cartMandate?.items ?? []).map((i) => ({ name: i.name, unitPrice: i.unitPrice })),
+      totalAmount: cartMandate?.totalAmount ?? 0,
+      currency: budgetCurrency,
+      budget: parseFloat(maxBudget) || 500,
+      constraints: {
+        maxAmountPerTransaction: parseFloat(maxBudget) || 500,
+        allowedCategories: scenario?.categories,
+        allowedPaymentMethods: ['card', 'wallet', 'ach'],
+        requireHumanConfirmation: requireConfirmation,
+      },
+      interactionMode: mode === 'human_present' ? 'supervised' : 'autonomous',
+      agentName: agent.name,
+      agentTrustScore: trustScore,
+    })
+    setAiLoading(false)
+
+    if (va && !fallback) {
+      setVerifyAnalysis(va)
+      addAudit(createAuditEntry('intent_verified', 'system', 'gemini_verifier',
+        `Gemini verdict: ${va.overallAssessment} Recommendation: ${va.recommendation.toUpperCase()}. Risk: ${va.riskScore}.`, lastHash))
+    } else {
+      setVerifyAnalysis(null)
     }
 
     // Auto-approve in autonomous mode
@@ -345,7 +562,7 @@ export default function AgenticPaymentDashboard() {
         addAudit(createAuditEntry('cart_approved', 'system', 'protocol_engine', 'Autonomous approval: cart within mandate constraints. Proceeding to payment.', lastHash))
         setStep('execute')
         startExecution()
-      }, 2000)
+      }, 2500)
     }
   }
 
@@ -399,7 +616,7 @@ export default function AgenticPaymentDashboard() {
     setDisputeMode(true)
     addAudit(createAuditEntry('dispute_raised', 'user', principalName, `Dispute raised against transaction. Mandate chain provides cryptographic evidence. Under review.`, lastHash))
     timerRef.current = setTimeout(() => {
-      addAudit(createAuditEntry('dispute_resolved', 'system', 'dispute_engine', 'Dispute resolved: Mandate chain verified. Intent ↔ Cart ↔ Payment integrity confirmed. No unauthorized actions.', lastHash))
+      addAudit(createAuditEntry('dispute_resolved', 'system', 'dispute_engine', 'Dispute resolved: Mandate chain verified. Intent <-> Cart <-> Payment integrity confirmed. No unauthorized actions.', lastHash))
       setTrustScore((prev) => Math.max(0, prev - 2))
     }, 3000)
   }
@@ -420,6 +637,10 @@ export default function AgenticPaymentDashboard() {
     setConstraintCheck(null)
     setDisputeMode(false)
     setTrustScore(92)
+    setIntentAnalysis(null)
+    setCartRec(null)
+    setVerifyAnalysis(null)
+    setGeminiActive(false)
     if (timerRef.current) clearTimeout(timerRef.current)
   }
 
@@ -431,8 +652,17 @@ export default function AgenticPaymentDashboard() {
     <div className="flex h-full flex-col gap-5">
       <PageHeader
         title="Agentic Payments"
-        subtitle="Simulate AI agent-mediated commerce using AP2 & ACT protocols. Mandates, delegation, trust, and full audit trails."
+        subtitle="AI agent-mediated commerce using AP2 & ACT protocols. Powered by Gemini 3 Flash."
       />
+
+      {/* ── Gemini Status Badge ─────────────────────────────────────────────── */}
+      {geminiActive && (
+        <div className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-fuchsia-50 to-violet-50 border border-fuchsia-200 px-3 py-1.5 dark:from-fuchsia-900/15 dark:to-violet-900/15 dark:border-fuchsia-800/40">
+          <svg className="h-3.5 w-3.5 text-fuchsia-600 dark:text-fuchsia-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" /></svg>
+          <span className="text-[11px] font-semibold text-fuchsia-700 dark:text-fuchsia-300">Gemini 3 Flash Active</span>
+          <span className="text-[10px] text-fuchsia-500 dark:text-fuchsia-400">Real AI reasoning enabled</span>
+        </div>
+      )}
 
       {/* ── Stepper ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-900/60">
@@ -585,9 +815,9 @@ export default function AgenticPaymentDashboard() {
                 </div>
               </div>
 
-              <button type="button" onClick={handleDelegateNext} disabled={!intentText.trim() || !maxBudget}
+              <button type="button" onClick={handleDelegateNext} disabled={!intentText.trim() || !maxBudget || aiLoading}
                 className="w-full rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                Sign Mandate & Start Discovery
+                {aiLoading ? 'Analyzing with Gemini...' : 'Sign Mandate & Start Discovery'}
               </button>
             </CardContainer>
           )}
@@ -597,6 +827,36 @@ export default function AgenticPaymentDashboard() {
             <CardContainer className="p-6 dark:border-gray-800 dark:bg-gray-900/50">
               <SectionTitle className="mb-1 dark:text-gray-400">3. Agent Discovery</SectionTitle>
               <p className="mb-5 text-xs text-gray-500 dark:text-gray-400">{agent.name} is searching merchants and comparing options.</p>
+
+              {/* Gemini Intent Analysis Display */}
+              {intentAnalysis && (
+                <AiInsightCard title="AI Intent Analysis" gemini>
+                  <p className="font-medium mb-1">{intentAnalysis.summary}</p>
+                  <p className="mb-2 italic text-gray-500 dark:text-gray-400">&quot;{intentAnalysis.agentThinking}&quot;</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+                    <span className="text-gray-500">Strategy:</span>
+                    <span>{intentAnalysis.suggestedSearchStrategy}</span>
+                    <span className="text-gray-500">Flexibility:</span>
+                    <span className="capitalize">{intentAnalysis.extractedConstraints.flexibility}</span>
+                    <span className="text-gray-500">Urgency:</span>
+                    <span className="capitalize">{intentAnalysis.extractedConstraints.urgency}</span>
+                    <span className="text-gray-500">Risk:</span>
+                    <span>{intentAnalysis.riskAssessment}</span>
+                    {intentAnalysis.extractedConstraints.preferredBrands.length > 0 && (
+                      <>
+                        <span className="text-gray-500">Brands:</span>
+                        <span>{intentAnalysis.extractedConstraints.preferredBrands.join(', ')}</span>
+                      </>
+                    )}
+                    {intentAnalysis.extractedConstraints.mustHaveFeatures.length > 0 && (
+                      <>
+                        <span className="text-gray-500">Must-have:</span>
+                        <span>{intentAnalysis.extractedConstraints.mustHaveFeatures.join(', ')}</span>
+                      </>
+                    )}
+                  </div>
+                </AiInsightCard>
+              )}
 
               <div className="mb-5">
                 <div className="flex items-center justify-between mb-2">
@@ -638,11 +898,13 @@ export default function AgenticPaymentDashboard() {
               )}
 
               {!discovering && discoverProgress >= 100 && (
-                <button type="button" onClick={handleDiscoverNext}
-                  className="w-full rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-violet-700">
-                  View Agent's Cart Proposal
+                <button type="button" onClick={handleDiscoverNext} disabled={aiLoading}
+                  className="w-full rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-violet-700 disabled:opacity-50">
+                  {aiLoading ? 'Gemini is building cart...' : 'View Agent\'s Cart Proposal'}
                 </button>
               )}
+
+              {aiLoading && <AiThinkingBanner label={`${agent.name} is reasoning about the optimal cart...`} />}
             </CardContainer>
           )}
 
@@ -652,14 +914,40 @@ export default function AgenticPaymentDashboard() {
               <SectionTitle className="mb-1 dark:text-gray-400">4. Cart Proposal</SectionTitle>
               <p className="mb-5 text-xs text-gray-500 dark:text-gray-400">{agent.name} built this cart based on your intent mandate.</p>
 
+              {/* Gemini Cart Reasoning */}
+              {cartRec && (
+                <AiInsightCard title="AI Cart Reasoning" gemini>
+                  <p className="mb-2">{cartRec.reasoning}</p>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] mb-2">
+                    <span className="text-gray-500">Selected merchant:</span>
+                    <span className="font-medium">{cartRec.selectedMerchant}</span>
+                    <span className="text-gray-500">Why this merchant:</span>
+                    <span>{cartRec.merchantReasoning}</span>
+                    <span className="text-gray-500">Savings:</span>
+                    <span>{cartRec.savingsNote}</span>
+                    <span className="text-gray-500">Alternatives:</span>
+                    <span>{cartRec.alternativeConsidered}</span>
+                    <span className="text-gray-500">AI confidence:</span>
+                    <span className="font-medium">{Math.round((cartRec.confidence ?? 0) * 100)}%</span>
+                  </div>
+                </AiInsightCard>
+              )}
+
               <div className="mb-4 space-y-2">
                 {cartMandate.items.map((item, i) => (
-                  <div key={i} className="flex items-center justify-between rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800">
-                    <div>
-                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.name}</p>
-                      <p className="text-[11px] text-gray-500 dark:text-gray-400">from {scenario?.cartItems[i]?.merchant}</p>
+                  <div key={i} className="rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.name}</p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                          from {cartRec?.items[i] ? cartRec.selectedMerchant : scenario?.cartItems[i]?.merchant}
+                        </p>
+                      </div>
+                      <p className="text-sm font-semibold tabular-nums text-gray-800 dark:text-gray-200">{formatCurrency(item.unitPrice, cartMandate.currency)}</p>
                     </div>
-                    <p className="text-sm font-semibold tabular-nums text-gray-800 dark:text-gray-200">{formatCurrency(item.unitPrice, cartMandate.currency)}</p>
+                    {cartRec?.items[i]?.justification && (
+                      <p className="mt-1.5 text-[10px] italic text-fuchsia-600 dark:text-fuchsia-400">AI: {cartRec.items[i].justification}</p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -679,9 +967,9 @@ export default function AgenticPaymentDashboard() {
                 </div>
               </div>
 
-              <button type="button" onClick={handleProposeNext}
-                className="w-full rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-violet-700">
-                Proceed to Verification
+              <button type="button" onClick={handleProposeNext} disabled={aiLoading}
+                className="w-full rounded-2xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-violet-700 disabled:opacity-50">
+                {aiLoading ? 'Gemini verifying...' : 'Proceed to Verification'}
               </button>
             </CardContainer>
           )}
@@ -694,7 +982,44 @@ export default function AgenticPaymentDashboard() {
                 {mode === 'human_present' ? 'Review constraint compliance and approve or reject.' : 'Autonomous mode: auto-approving within constraints...'}
               </p>
 
-              {/* Constraint check */}
+              {aiLoading && <AiThinkingBanner label="Gemini is analyzing mandate compliance..." />}
+
+              {/* Gemini Verification Analysis */}
+              {verifyAnalysis && (
+                <AiInsightCard title="AI Verification Analysis" gemini>
+                  <p className="font-medium mb-2">{verifyAnalysis.overallAssessment}</p>
+                  <div className="space-y-1.5 mb-2">
+                    {verifyAnalysis.constraintAnalysis.map((ca, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className={`mt-0.5 inline-block rounded px-1 py-0.5 text-[9px] font-bold ${
+                          ca.status === 'pass' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                            : ca.status === 'fail' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                              : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
+                        }`}>
+                          {ca.status.toUpperCase()}
+                        </span>
+                        <div>
+                          <span className="font-medium">{ca.constraint}</span>
+                          <p className="text-[10px] text-gray-500 dark:text-gray-400">{ca.explanation}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-3 text-[10px]">
+                    <span className={`rounded-full px-2 py-0.5 font-bold ${
+                      verifyAnalysis.recommendation === 'approve' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                        : verifyAnalysis.recommendation === 'reject' ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                          : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
+                    }`}>
+                      {verifyAnalysis.recommendation.toUpperCase()}
+                    </span>
+                    <span className="text-gray-500">Risk: <span className="font-medium capitalize">{verifyAnalysis.riskScore}</span></span>
+                  </div>
+                  <p className="mt-1.5 text-[10px] italic text-gray-500 dark:text-gray-400">{verifyAnalysis.reasoning}</p>
+                </AiInsightCard>
+              )}
+
+              {/* Local constraint check */}
               {constraintCheck && (
                 <div className={`mb-4 rounded-2xl border p-4 ${constraintCheck.valid ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-800/50 dark:bg-emerald-900/10' : 'border-red-200 bg-red-50/50 dark:border-red-800/50 dark:bg-red-900/10'}`}>
                   <div className="flex items-center gap-2 mb-2">
@@ -704,7 +1029,7 @@ export default function AgenticPaymentDashboard() {
                       <svg className="h-5 w-5 text-red-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
                     )}
                     <p className={`text-sm font-semibold ${constraintCheck.valid ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>
-                      Constraint Check: {constraintCheck.valid ? 'ALL PASSED' : `${constraintCheck.violations.length} VIOLATION(S)`}
+                      Protocol Check: {constraintCheck.valid ? 'ALL PASSED' : `${constraintCheck.violations.length} VIOLATION(S)`}
                     </p>
                   </div>
                   <div className="space-y-1 text-xs">
@@ -745,7 +1070,7 @@ export default function AgenticPaymentDashboard() {
                 </div>
               </div>
 
-              {mode === 'human_present' && (
+              {mode === 'human_present' && !aiLoading && (
                 <div className="flex gap-3">
                   <button type="button" onClick={handleReject}
                     className="flex-1 rounded-2xl border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50 dark:border-red-800 dark:bg-gray-800 dark:text-red-400 dark:hover:bg-red-900/20">
@@ -862,6 +1187,8 @@ export default function AgenticPaymentDashboard() {
                   <span className="font-medium text-gray-800 dark:text-gray-200">{scenario?.name}</span>
                   <span className="text-gray-500 dark:text-gray-400">Agent</span>
                   <span className="font-medium text-gray-800 dark:text-gray-200">{agent.name}</span>
+                  <span className="text-gray-500 dark:text-gray-400">AI Engine</span>
+                  <span className="font-medium text-gray-800 dark:text-gray-200">{geminiActive ? 'Gemini 3 Flash' : 'Simulation'}</span>
                   <span className="text-gray-500 dark:text-gray-400">Total Amount</span>
                   <span className="font-medium text-gray-800 dark:text-gray-200">{formatCurrency(cartMandate?.totalAmount ?? 0, budgetCurrency)}</span>
                   <span className="text-gray-500 dark:text-gray-400">Items</span>
@@ -946,8 +1273,12 @@ export default function AgenticPaymentDashboard() {
             <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50 p-2.5 dark:border-gray-800 dark:bg-gray-800/30">
               <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Protocol Standards</p>
               <div className="flex flex-wrap gap-1">
-                {['AP2', 'ACT', 'ISO 20022', 'VC 1.1'].map((t) => (
-                  <span key={t} className="rounded-md bg-white px-1.5 py-0.5 text-[9px] font-medium text-gray-500 border border-gray-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400">{t}</span>
+                {['AP2', 'ACT', 'ISO 20022', 'Gemini 3', 'VC 1.1'].map((t) => (
+                  <span key={t} className={`rounded-md px-1.5 py-0.5 text-[9px] font-medium border ${
+                    t === 'Gemini 3'
+                      ? 'bg-fuchsia-50 text-fuchsia-600 border-fuchsia-200 dark:bg-fuchsia-900/20 dark:text-fuchsia-400 dark:border-fuchsia-800'
+                      : 'bg-white text-gray-500 border-gray-200 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400'
+                  }`}>{t}</span>
                 ))}
               </div>
             </div>
